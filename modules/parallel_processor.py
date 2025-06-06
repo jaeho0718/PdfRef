@@ -150,3 +150,81 @@ class ParallelProcessor:
                         progress_callback(completed, total)
         
         return results
+
+    def process_pages_with_callbacks(self,
+                                     pages: List[Tuple[int, str]],
+                                     process_func: Callable,
+                                     progress_callback: Callable = None,
+                                     page_callback: Callable = None) -> List[Dict]:
+        """콜백과 함께 페이지 병렬 처리
+
+        Args:
+            pages: (page_number, image_path) 튜플 리스트
+            process_func: 각 페이지를 처리할 함수
+            progress_callback: 진행 상황 콜백
+            page_callback: 페이지 완료 콜백
+
+        Returns:
+            처리 결과 리스트
+        """
+        results = []
+        completed = 0
+        total = len(pages)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            # Future 객체 생성
+            futures = {
+                executor.submit(process_func, img_path, page_num): (page_num, img_path)
+                for page_num, img_path in pages
+            }
+
+            # 완료된 작업 처리
+            for future in concurrent.futures.as_completed(futures):
+                page_num, img_path = futures[future]
+
+                try:
+                    result = future.result(timeout=300)
+                    results.append(result)
+                    completed += 1
+
+                    # 콜백 호출
+                    if progress_callback:
+                        progress_callback(completed, total)
+
+                    if page_callback:
+                        page_callback(result)
+
+                except concurrent.futures.TimeoutError:
+                    logger.error(f"페이지 {page_num} 처리 타임아웃")
+                    error_result = {
+                        'page_index': page_num,
+                        'error': 'Processing timeout'
+                    }
+                    results.append(error_result)
+                    completed += 1
+
+                    if progress_callback:
+                        progress_callback(completed, total)
+
+                except Exception as e:
+                    logger.error(f"페이지 {page_num} 처리 실패: {str(e)}")
+                    error_result = {
+                        'page_index': page_num,
+                        'error': str(e)
+                    }
+                    results.append(error_result)
+                    completed += 1
+
+                    if progress_callback:
+                        progress_callback(completed, total)
+
+                # 이미지 파일 정리
+                try:
+                    if os.path.exists(img_path):
+                        os.remove(img_path)
+                except:
+                    pass
+
+        # 페이지 번호로 정렬
+        results.sort(key=lambda x: x.get('page_index', 0))
+        return results
