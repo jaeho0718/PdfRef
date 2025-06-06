@@ -1,9 +1,12 @@
-from typing import List, Dict, Any, Tuple, Callable
+from typing import List, Dict, Any, Tuple, Callable, Optional
 import os
 import tempfile
 import shutil
 import logging
 from datetime import datetime
+import re
+import numpy as np
+import concurrent.futures
 
 from layout_detector import LayoutDetector
 from text_detector import TextDetector
@@ -23,98 +26,11 @@ class DocumentAnalyzer:
         self.figure_mapper = FigureMapper()
         self.pdf_processor = PDFProcessor()
         self.parallel_processor = ParallelProcessor()
-
-    def process_pages_with_callbacks(self,
-                                     pages: List[Tuple[int, str]],
-                                     process_func: Callable,
-                                     progress_callback: Callable = None,
-                                     page_callback: Callable = None) -> List[Dict]:
-        """콜백과 함께 페이지 병렬 처리
-
-        Args:
-            pages: (page_number, image_path) 튜플 리스트
-            process_func: 각 페이지를 처리할 함수
-            progress_callback: 진행 상황 콜백
-            page_callback: 페이지 완료 콜백
-
-        Returns:
-            처리 결과 리스트
-        """
-        results = []
-        completed = 0
-        total = len(pages)
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            # Future 객체 생성
-            futures = {
-                executor.submit(process_func, img_path, page_num): (page_num, img_path)
-                for page_num, img_path in pages
-            }
-
-            # 완료된 작업 처리
-            for future in concurrent.futures.as_completed(futures):
-                page_num, img_path = futures[future]
-
-                try:
-                    result = future.result(timeout=300)
-                    results.append(result)
-                    completed += 1
-
-                    # 콜백 호출
-                    if progress_callback:
-                        progress_callback(completed, total)
-
-                    if page_callback:
-                        page_callback(result)
-
-                except concurrent.futures.TimeoutError:
-                    logger.error(f"페이지 {page_num} 처리 타임아웃")
-                    error_result = {
-                        'page_index': page_num,
-                        'error': 'Processing timeout'
-                    }
-                    results.append(error_result)
-                    completed += 1
-
-                    if progress_callback:
-                        progress_callback(completed, total)
-
-                except Exception as e:
-                    logger.error(f"페이지 {page_num} 처리 실패: {str(e)}")
-                    error_result = {
-                        'page_index': page_num,
-                        'error': str(e)
-                    }
-                    results.append(error_result)
-                    completed += 1
-
-                    if progress_callback:
-                        progress_callback(completed, total)
-
-                # 이미지 파일 정리
-                try:
-                    if os.path.exists(img_path):
-                        os.remove(img_path)
-                except:
-                    pass
-
-        # 페이지 번호로 정렬
-        results.sort(key=lambda x: x.get('page_index', 0))
-        return results
         
     def analyze_pdf(self, pdf_path: str, 
                    chunk_size: int = 10,
                    progress_callback: Callable = None) -> Dict[str, Any]:
-        """PDF 문서 전체 분석
-        
-        Args:
-            pdf_path: PDF 파일 경로
-            chunk_size: 병렬 처리 청크 크기
-            progress_callback: 진행 상황 콜백
-            
-        Returns:
-            분석 결과
-        """
+        """PDF 문서 전체 분석"""
         start_time = datetime.now()
         temp_dir = tempfile.mkdtemp()
         
@@ -125,39 +41,28 @@ class DocumentAnalyzer:
             
             logger.info(f"PDF 분석 시작: {total_pages} 페이지")
             
-            # PDF를 이미지로 변환 (Generator 사용)
+            # PDF를 이미지로 변환
             pages = list(self.pdf_processor.convert_pdf_to_images(pdf_path))
             
-            # 병렬 처리
+            # 병렬 처리로 페이지별 분석
             results = self.parallel_processor.process_pages_parallel(
                 pages,
                 self._analyze_single_page,
                 batch_size=1
             )
             
-            # 전체 문서에 대한 Figure 맵핑 최적화
-            all_figure_refs = []
-            all_figure_layouts = []
+            # 문서 구조 구축 (챕터/섹션 정보 포함)
+            self.figure_mapper.build_document_structure(results)
             
-            for result in results:
-                if 'error' not in result:
-                    all_figure_refs.extend(result.get('figure_references', []))
-                    all_figure_layouts.extend(result.get('figure_layouts', []))
-            
-            # Cross-page Figure 맵핑
-            optimized_mappings = self._optimize_figure_mappings(
-                all_figure_refs, 
-                all_figure_layouts
-            )
-            
-            # 결과에 최적화된 맵핑 적용
+            # 각 페이지의 Figure 참조 재매핑
             for result in results:
                 if 'error' not in result and 'figure_references' in result:
                     page_idx = result['page_index']
-                    result['figure_references'] = [
-                        ref for ref in optimized_mappings 
-                        if ref.get('page_index') == page_idx
-                    ]
+                    # 문서 구조를 활용한 매핑
+                    result['figure_references'] = self.figure_mapper.map_references_to_figures(
+                        result['figure_references'],
+                        page_idx
+                    )
             
             # 최종 결과 구성
             analysis_result = {
@@ -165,6 +70,10 @@ class DocumentAnalyzer:
                 'pdf_info': pdf_info,
                 'total_pages': total_pages,
                 'pages': results,
+                'document_structure': {
+                    'chapters': self._extract_chapter_summary(),
+                    'figure_registry': self.figure_mapper.figure_registry
+                },
                 'summary': self._generate_summary(results),
                 'processing_time': (datetime.now() - start_time).total_seconds()
             }
@@ -179,12 +88,75 @@ class DocumentAnalyzer:
                 'processing_time': (datetime.now() - start_time).total_seconds()
             }
         finally:
-            # 임시 디렉토리 정리
+            if os.path.exists(temp_dir):
+                shutil.rmtree(temp_dir)
+    
+    def analyze_pdf_with_callbacks(self, 
+                                  pdf_path: str,
+                                  chunk_size: int = 10,
+                                  progress_callback: Callable = None,
+                                  page_callback: Callable = None) -> Dict[str, Any]:
+        """콜백과 함께 PDF 분석 (CLI용)"""
+        start_time = datetime.now()
+        temp_dir = tempfile.mkdtemp()
+        
+        try:
+            # PDF 정보 추출
+            pdf_info = self.pdf_processor.get_pdf_info(pdf_path)
+            total_pages = pdf_info['total_pages']
+            
+            # PDF를 이미지로 변환
+            pages = list(self.pdf_processor.convert_pdf_to_images(pdf_path))
+            
+            # 병렬 처리 with 콜백
+            results = self.parallel_processor.process_pages_with_callbacks(
+                pages,
+                self._analyze_single_page,
+                progress_callback=progress_callback,
+                page_callback=page_callback
+            )
+            
+            # 문서 구조 구축
+            self.figure_mapper.build_document_structure(results)
+            
+            # Figure 참조 재매핑
+            for result in results:
+                if 'error' not in result and 'figure_references' in result:
+                    page_idx = result['page_index']
+                    result['figure_references'] = self.figure_mapper.map_references_to_figures(
+                        result['figure_references'],
+                        page_idx
+                    )
+            
+            # 최종 결과 구성
+            analysis_result = {
+                'status': 'success',
+                'pdf_info': pdf_info,
+                'total_pages': total_pages,
+                'pages': results,
+                'document_structure': {
+                    'chapters': self._extract_chapter_summary(),
+                    'figure_registry': self.figure_mapper.figure_registry
+                },
+                'summary': self._generate_summary(results),
+                'processing_time': (datetime.now() - start_time).total_seconds()
+            }
+            
+            return analysis_result
+            
+        except Exception as e:
+            logger.error(f"PDF 분석 실패: {str(e)}")
+            return {
+                'status': 'error',
+                'error': str(e),
+                'processing_time': (datetime.now() - start_time).total_seconds()
+            }
+        finally:
             if os.path.exists(temp_dir):
                 shutil.rmtree(temp_dir)
     
     def _analyze_single_page(self, image_path: str, page_index: int) -> Dict[str, Any]:
-        """단일 페이지 분석"""
+        """단일 페이지 분석 - 챕터/섹션 정보 포함"""
         try:
             # 1. 레이아웃 감지
             layout_result = self.layout_detector.detect_layout(image_path, page_index)
@@ -200,28 +172,37 @@ class DocumentAnalyzer:
                 text_regions
             )
             
-            # 4. Figure 참조 추출
+            # 4. 챕터/섹션 정보 추출
+            chapter_info = self._extract_page_structure_info(
+                recognized_texts, 
+                layout_result['layouts']
+            )
+            
+            # 5. Figure 레이아웃에 추가 정보 보강
+            enhanced_figure_layouts = self._enhance_figure_layouts(
+                layout_result['figure_layouts'],
+                recognized_texts,
+                chapter_info
+            )
+            
+            # 6. Figure 참조 추출
             figure_references = self.figure_classifier.extract_figure_references(
                 recognized_texts
             )
             
-            # 5. 페이지 내 Figure 맵핑 (초기 맵핑)
-            mapped_references = self.figure_mapper.map_references_to_figures(
-                figure_references,
-                layout_result['figure_layouts'],
-                page_index
-            )
-            
-            # 페이지 인덱스 추가
-            for ref in mapped_references:
+            # 7. 페이지 컨텍스트 정보 추가
+            for ref in figure_references:
                 ref['page_index'] = page_index
+                ref['chapter'] = chapter_info.get('chapter')
+                ref['section'] = chapter_info.get('section')
             
             return {
                 'page_index': page_index,
                 'layouts': layout_result['layouts'],
-                'figure_layouts': layout_result['figure_layouts'],
+                'figure_layouts': enhanced_figure_layouts,
                 'recognized_texts': recognized_texts,
-                'figure_references': mapped_references,
+                'figure_references': figure_references,
+                'chapter_info': chapter_info,
                 'status': 'success'
             }
             
@@ -233,44 +214,300 @@ class DocumentAnalyzer:
                 'error': str(e)
             }
     
-    def _optimize_figure_mappings(self, 
-                                all_refs: List[Dict], 
-                                all_figures: List[Dict]) -> List[Dict]:
-        """전체 문서에 대한 Figure 맵핑 최적화"""
-        # Figure 번호별로 그룹화
-        ref_groups = {}
-        for ref in all_refs:
-            fig_num = ref.get('figure_number')
-            if fig_num not in ref_groups:
-                ref_groups[fig_num] = []
-            ref_groups[fig_num].append(ref)
+    def _extract_page_structure_info(self, 
+                                    texts: List[Dict], 
+                                    layouts: List[Dict]) -> Dict[str, Any]:
+        """페이지에서 구조 정보 (챕터, 섹션 등) 추출"""
+        chapter_info = {
+            'chapter': None,
+            'section': None,
+            'subsection': None,
+            'title': None
+        }
         
-        # Figure 레이아웃도 번호별로 그룹화 (휴리스틱)
-        figure_groups = {}
-        for idx, fig in enumerate(all_figures):
-            # 페이지와 순서를 기반으로 추정
-            estimated_num = idx + 1  # 간단한 휴리스틱
-            figure_groups[estimated_num] = fig
+        # 제목 레이아웃 찾기
+        title_layouts = [
+            layout for layout in layouts 
+            if layout.get('label', '').lower() in ['title', 'paragraph_title', 'header']
+        ]
         
-        # 최적화된 맵핑
-        optimized_refs = []
-        for fig_num, refs in ref_groups.items():
-            if fig_num in figure_groups:
-                target_figure = figure_groups[fig_num]
-                for ref in refs:
-                    ref['mapped_figure_id'] = target_figure['figure_id']
-                    ref['mapped_figure_bbox'] = target_figure['bbox']
-                    ref['mapped_figure_page'] = target_figure['page_index']
-                    optimized_refs.append(ref)
-            else:
-                # 맵핑 실패한 경우
-                for ref in refs:
-                    ref['mapped_figure_id'] = None
-                    ref['mapped_figure_bbox'] = None
-                    ref['mapped_figure_page'] = None
-                    optimized_refs.append(ref)
+        # 각 텍스트 검사
+        for text_info in texts:
+            text = text_info.get('text', '').strip()
+            bbox = text_info.get('bbox', [])
+            
+            # 텍스트가 제목 레이아웃 내에 있는지 확인
+            is_title = False
+            for title_layout in title_layouts:
+                if self._is_bbox_inside(bbox, title_layout.get('bbox', [])):
+                    is_title = True
+                    break
+            
+            # 챕터 패턴 매칭
+            chapter_match = self._match_chapter_pattern(text)
+            if chapter_match and (is_title or self._is_likely_chapter_heading(text_info, texts)):
+                chapter_info.update(chapter_match)
+                continue
+            
+            # 섹션 패턴 매칭
+            section_match = self._match_section_pattern(text)
+            if section_match and is_title:
+                chapter_info['section'] = section_match.get('section')
+                chapter_info['subsection'] = section_match.get('subsection')
         
-        return optimized_refs
+        return chapter_info
+    
+    def _match_chapter_pattern(self, text: str) -> Optional[Dict]:
+        """챕터 패턴 매칭"""
+        patterns = [
+            (r'Chapter\s+(\d+)(?:\s*[:\.]?\s*(.*))?', 'en'),
+            (r'CHAPTER\s+(\d+)(?:\s*[:\.]?\s*(.*))?', 'en'),
+            (r'제\s*(\d+)\s*장(?:\s*[:\.]?\s*(.*))?', 'ko'),
+            (r'第\s*(\d+)\s*章(?:\s*[:\.]?\s*(.*))?', 'zh'),
+        ]
+        
+        for pattern, lang in patterns:
+            match = re.match(pattern, text, re.IGNORECASE)
+            if match:
+                return {
+                    'chapter': int(match.group(1)),
+                    'title': match.group(2).strip() if match.group(2) else None,
+                    'language': lang
+                }
+        
+        return None
+    
+    def _match_section_pattern(self, text: str) -> Optional[Dict]:
+        """섹션 패턴 매칭"""
+        patterns = [
+            r'(\d+)\.(\d+)(?:\.(\d+))?\s*(.*)',  # 1.2.3 형식
+            r'Section\s+(\d+)(?:\.(\d+))?\s*(.*)',
+            r'§\s*(\d+)(?:\.(\d+))?\s*(.*)',
+        ]
+        
+        for pattern in patterns:
+            match = re.match(pattern, text, re.IGNORECASE)
+            if match:
+                groups = match.groups()
+                return {
+                    'section': f"{groups[0]}.{groups[1]}" if groups[1] else groups[0],
+                    'subsection': groups[2] if len(groups) > 2 and groups[2] else None,
+                    'title': groups[-1].strip() if groups[-1] else None
+                }
+        
+        return None
+    
+    def _is_likely_chapter_heading(self, text_info: Dict, all_texts: List[Dict]) -> bool:
+        """텍스트가 챕터 제목일 가능성 판단"""
+        text = text_info.get('text', '')
+        bbox = text_info.get('bbox', [])
+        
+        # 휴리스틱 1: 페이지 상단에 위치
+        if len(bbox) >= 4 and bbox[1] < 200:  # Y 좌표가 200 픽셀 이내
+            return True
+        
+        # 휴리스틱 2: 다른 텍스트보다 큰 폰트 (bbox 높이로 추정)
+        if len(bbox) >= 4:
+            text_height = bbox[3] - bbox[1]
+            avg_height = np.mean([
+                t.get('bbox', [0,0,0,0])[3] - t.get('bbox', [0,0,0,0])[1] 
+                for t in all_texts if len(t.get('bbox', [])) >= 4
+            ])
+            if text_height > avg_height * 1.5:
+                return True
+        
+        # 휴리스틱 3: 독립된 줄 (주변에 다른 텍스트 없음)
+        if self._is_isolated_text(text_info, all_texts):
+            return True
+        
+        return False
+    
+    def _is_isolated_text(self, text_info: Dict, all_texts: List[Dict]) -> bool:
+        """텍스트가 독립된 줄인지 확인"""
+        bbox = text_info.get('bbox', [])
+        if len(bbox) < 4:
+            return False
+        
+        # 같은 Y 범위에 있는 다른 텍스트 찾기
+        y_center = (bbox[1] + bbox[3]) / 2
+        y_tolerance = (bbox[3] - bbox[1]) / 2
+        
+        nearby_texts = 0
+        for other in all_texts:
+            if other == text_info:
+                continue
+            
+            other_bbox = other.get('bbox', [])
+            if len(other_bbox) >= 4:
+                other_y_center = (other_bbox[1] + other_bbox[3]) / 2
+                if abs(other_y_center - y_center) < y_tolerance:
+                    nearby_texts += 1
+        
+        return nearby_texts == 0
+    
+    def _enhance_figure_layouts(self, 
+                              figure_layouts: List[Dict],
+                              texts: List[Dict],
+                              chapter_info: Dict) -> List[Dict]:
+        """Figure 레이아웃에 추가 정보 보강"""
+        enhanced_layouts = []
+        
+        for idx, figure in enumerate(figure_layouts):
+            enhanced_figure = figure.copy()
+            
+            # 챕터 정보 추가
+            enhanced_figure['chapter'] = chapter_info.get('chapter')
+            enhanced_figure['section'] = chapter_info.get('section')
+            
+            # Figure 캡션 찾기 및 번호 추출
+            caption_info = self._find_and_parse_figure_caption(figure, texts)
+            if caption_info:
+                enhanced_figure['caption'] = caption_info.get('text')
+                enhanced_figure['figure_number'] = caption_info.get('number')
+                enhanced_figure['caption_bbox'] = caption_info.get('bbox')
+            
+            # Figure ID 개선 (챕터 정보 포함)
+            if enhanced_figure.get('figure_number'):
+                if chapter_info.get('chapter'):
+                    enhanced_figure['figure_id'] = (
+                        f"ch{chapter_info['chapter']}_fig{enhanced_figure['figure_number']}"
+                    )
+                else:
+                    enhanced_figure['figure_id'] = f"fig_{enhanced_figure['figure_number']}"
+            
+            enhanced_layouts.append(enhanced_figure)
+        
+        return enhanced_layouts
+    
+    def _find_and_parse_figure_caption(self, 
+                                     figure: Dict, 
+                                     texts: List[Dict]) -> Optional[Dict]:
+        """Figure 캡션 찾기 및 파싱"""
+        figure_bbox = figure.get('bbox', [])
+        if len(figure_bbox) < 4:
+            return None
+        
+        # Figure 아래/위의 텍스트 찾기
+        caption_candidates = []
+        
+        for text in texts:
+            text_content = text.get('text', '').strip()
+            text_bbox = text.get('bbox', [])
+            
+            if not text_content or len(text_bbox) < 4:
+                continue
+            
+            # Figure 캡션 패턴 확인
+            caption_patterns = [
+                r'Fig(?:ure)?\.?\s*(\d+)(?:\s*[:\.]?\s*(.*))?',
+                r'Figure\s*(\d+)(?:\s*[:\.]?\s*(.*))?',
+                r'그림\s*(\d+)(?:\s*[:\.]?\s*(.*))?',
+                r'图\s*(\d+)(?:\s*[:\.]?\s*(.*))?',
+            ]
+            
+            for pattern in caption_patterns:
+                match = re.match(pattern, text_content, re.IGNORECASE)
+                if match:
+                    # 위치 관계 확인
+                    position_score = self._calculate_caption_position_score(
+                        figure_bbox, text_bbox
+                    )
+                    
+                    if position_score > 0.5:  # 임계값
+                        caption_candidates.append({
+                            'text': text_content,
+                            'number': int(match.group(1)),
+                            'title': match.group(2).strip() if match.group(2) else None,
+                            'bbox': text_bbox,
+                            'score': position_score
+                        })
+        
+        # 가장 좋은 캡션 선택
+        if caption_candidates:
+            caption_candidates.sort(key=lambda x: x['score'], reverse=True)
+            return caption_candidates[0]
+        
+        return None
+    
+    def _calculate_caption_position_score(self, 
+                                        figure_bbox: List[float], 
+                                        text_bbox: List[float]) -> float:
+        """캡션 위치 점수 계산"""
+        # Figure 중심과 텍스트 중심
+        fig_center_x = (figure_bbox[0] + figure_bbox[2]) / 2
+        text_center_x = (text_bbox[0] + text_bbox[2]) / 2
+        
+        # 수평 정렬 점수
+        horizontal_distance = abs(fig_center_x - text_center_x)
+        fig_width = figure_bbox[2] - figure_bbox[0]
+        horizontal_score = max(0, 1 - horizontal_distance / fig_width)
+        
+        # 수직 거리 점수
+        vertical_distance = 0
+        if text_bbox[1] > figure_bbox[3]:  # 텍스트가 아래에
+            vertical_distance = text_bbox[1] - figure_bbox[3]
+        elif text_bbox[3] < figure_bbox[1]:  # 텍스트가 위에
+            vertical_distance = figure_bbox[1] - text_bbox[3]
+        else:
+            return 0  # 겹치는 경우
+        
+        # 너무 멀면 점수 감소
+        vertical_score = max(0, 1 - vertical_distance / 100)
+        
+        # 최종 점수
+        return horizontal_score * 0.7 + vertical_score * 0.3
+    
+    def _is_bbox_inside(self, inner_bbox: List[float], outer_bbox: List[float]) -> bool:
+        """inner_bbox가 outer_bbox 내부에 있는지 확인"""
+        if len(inner_bbox) < 4 or len(outer_bbox) < 4:
+            return False
+        
+        # 약간의 여유를 두고 확인 (OCR 오차 고려)
+        margin = 5
+        return (inner_bbox[0] >= outer_bbox[0] - margin and 
+                inner_bbox[1] >= outer_bbox[1] - margin and 
+                inner_bbox[2] <= outer_bbox[2] + margin and 
+                inner_bbox[3] <= outer_bbox[3] + margin)
+    
+    def _extract_chapter_summary(self) -> List[Dict]:
+        """챕터 구조 요약"""
+        chapters = {}
+        
+        for page_idx, chapter_info in self.figure_mapper.chapter_info.items():
+            chapter = chapter_info.get('chapter')
+            if chapter:
+                if chapter not in chapters:
+                    chapters[chapter] = {
+                        'chapter': chapter,
+                        'start_page': page_idx,
+                        'end_page': page_idx,
+                        'sections': set(),
+                        'figure_count': 0
+                    }
+                else:
+                    chapters[chapter]['end_page'] = max(
+                        chapters[chapter]['end_page'], 
+                        page_idx
+                    )
+                
+                section = chapter_info.get('section')
+                if section:
+                    chapters[chapter]['sections'].add(section)
+        
+        # Figure 수 계산
+        for fig_info in self.figure_mapper.figure_registry.values():
+            chapter = fig_info.get('chapter')
+            if chapter and chapter in chapters:
+                chapters[chapter]['figure_count'] += 1
+        
+        # 정렬 및 변환
+        chapter_list = []
+        for chapter in sorted(chapters.keys()):
+            chapter_info = chapters[chapter]
+            chapter_info['sections'] = sorted(list(chapter_info['sections']))
+            chapter_list.append(chapter_info)
+        
+        return chapter_list
     
     def _generate_summary(self, results: List[Dict]) -> Dict[str, Any]:
         """분석 결과 요약 생성"""
@@ -298,86 +535,3 @@ class DocumentAnalyzer:
             'error_pages': error_pages,
             'success_rate': (len(results) - error_pages) / len(results) * 100 if results else 0
         }
-
-    def analyze_pdf_with_callbacks(self, 
-                                  pdf_path: str,
-                                  chunk_size: int = 10,
-                                  progress_callback: Callable = None,
-                                  page_callback: Callable = None) -> Dict[str, Any]:
-        """콜백과 함께 PDF 분석 (CLI용)
-        
-        Args:
-            pdf_path: PDF 파일 경로
-            chunk_size: 병렬 처리 청크 크기
-            progress_callback: 진행 상황 콜백 (current, total)
-            page_callback: 페이지 완료 콜백 (page_result)
-            
-        Returns:
-            분석 결과
-        """
-        start_time = datetime.now()
-        temp_dir = tempfile.mkdtemp()
-        
-        try:
-            # PDF 정보 추출
-            pdf_info = self.pdf_processor.get_pdf_info(pdf_path)
-            total_pages = pdf_info['total_pages']
-            
-            # PDF를 이미지로 변환
-            pages = list(self.pdf_processor.convert_pdf_to_images(pdf_path))
-            
-            # 병렬 처리 with 콜백
-            results = self.parallel_processor.process_pages_with_callbacks(
-                pages,
-                self._analyze_single_page,
-                progress_callback=progress_callback,
-                page_callback=page_callback
-            )
-            
-            # Figure 맵핑 최적화
-            all_figure_refs = []
-            all_figure_layouts = []
-            
-            for result in results:
-                if 'error' not in result:
-                    all_figure_refs.extend(result.get('figure_references', []))
-                    all_figure_layouts.extend(result.get('figure_layouts', []))
-            
-            # Cross-page Figure 맵핑
-            optimized_mappings = self._optimize_figure_mappings(
-                all_figure_refs, 
-                all_figure_layouts
-            )
-            
-            # 결과에 최적화된 맵핑 적용
-            for result in results:
-                if 'error' not in result and 'figure_references' in result:
-                    page_idx = result['page_index']
-                    result['figure_references'] = [
-                        ref for ref in optimized_mappings 
-                        if ref.get('page_index') == page_idx
-                    ]
-            
-            # 최종 결과 구성
-            analysis_result = {
-                'status': 'success',
-                'pdf_info': pdf_info,
-                'total_pages': total_pages,
-                'pages': results,
-                'summary': self._generate_summary(results),
-                'processing_time': (datetime.now() - start_time).total_seconds()
-            }
-            
-            return analysis_result
-            
-        except Exception as e:
-            logger.error(f"PDF 분석 실패: {str(e)}")
-            return {
-                'status': 'error',
-                'error': str(e),
-                'processing_time': (datetime.now() - start_time).total_seconds()
-            }
-        finally:
-            # 임시 디렉토리 정리
-            if os.path.exists(temp_dir):
-                shutil.rmtree(temp_dir)
