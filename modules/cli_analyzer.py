@@ -17,6 +17,9 @@ from rich.text import Text
 from rich.syntax import Syntax
 from rich import box
 
+# Add the parent directory to sys.path
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from modules.document_analyzer import DocumentAnalyzer
 from modules.pdf_processor import PDFProcessor
 

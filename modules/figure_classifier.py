@@ -1,7 +1,12 @@
 import re
 import torch
+import torch.nn as nn
+import torchvision.models as models
 from transformers import BertTokenizer, BertForSequenceClassification
 from typing import List, Dict, Tuple
+from PIL import Image
+import numpy as np
+
 from config import config
 
 class FigureClassifier:

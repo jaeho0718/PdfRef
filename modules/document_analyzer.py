@@ -1,16 +1,16 @@
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Callable
 import os
 import tempfile
 import shutil
 import logging
 from datetime import datetime
 
-from .layout_detector import LayoutDetector
-from .text_detector import TextDetector
-from .figure_classifier import FigureClassifier
-from .figure_mapper import FigureMapper
-from .pdf_processor import PDFProcessor
-from .parallel_processor import ParallelProcessor
+from layout_detector import LayoutDetector
+from text_detector import TextDetector
+from figure_classifier import FigureClassifier
+from figure_mapper import FigureMapper
+from pdf_processor import PDFProcessor
+from parallel_processor import ParallelProcessor
 
 logger = logging.getLogger(__name__)
 
@@ -298,3 +298,86 @@ class DocumentAnalyzer:
             'error_pages': error_pages,
             'success_rate': (len(results) - error_pages) / len(results) * 100 if results else 0
         }
+
+    def analyze_pdf_with_callbacks(self, 
+                                  pdf_path: str,
+                                  chunk_size: int = 10,
+                                  progress_callback: Callable = None,
+                                  page_callback: Callable = None) -> Dict[str, Any]:
+        """콜백과 함께 PDF 분석 (CLI용)
+        
+        Args:
+            pdf_path: PDF 파일 경로
+            chunk_size: 병렬 처리 청크 크기
+            progress_callback: 진행 상황 콜백 (current, total)
+            page_callback: 페이지 완료 콜백 (page_result)
+            
+        Returns:
+            분석 결과
+        """
+        start_time = datetime.now()
+        temp_dir = tempfile.mkdtemp()
+        
+        try:
+            # PDF 정보 추출
+            pdf_info = self.pdf_processor.get_pdf_info(pdf_path)
+            total_pages = pdf_info['total_pages']
+            
+            # PDF를 이미지로 변환
+            pages = list(self.pdf_processor.convert_pdf_to_images(pdf_path))
+            
+            # 병렬 처리 with 콜백
+            results = self.parallel_processor.process_pages_with_callbacks(
+                pages,
+                self._analyze_single_page,
+                progress_callback=progress_callback,
+                page_callback=page_callback
+            )
+            
+            # Figure 맵핑 최적화
+            all_figure_refs = []
+            all_figure_layouts = []
+            
+            for result in results:
+                if 'error' not in result:
+                    all_figure_refs.extend(result.get('figure_references', []))
+                    all_figure_layouts.extend(result.get('figure_layouts', []))
+            
+            # Cross-page Figure 맵핑
+            optimized_mappings = self._optimize_figure_mappings(
+                all_figure_refs, 
+                all_figure_layouts
+            )
+            
+            # 결과에 최적화된 맵핑 적용
+            for result in results:
+                if 'error' not in result and 'figure_references' in result:
+                    page_idx = result['page_index']
+                    result['figure_references'] = [
+                        ref for ref in optimized_mappings 
+                        if ref.get('page_index') == page_idx
+                    ]
+            
+            # 최종 결과 구성
+            analysis_result = {
+                'status': 'success',
+                'pdf_info': pdf_info,
+                'total_pages': total_pages,
+                'pages': results,
+                'summary': self._generate_summary(results),
+                'processing_time': (datetime.now() - start_time).total_seconds()
+            }
+            
+            return analysis_result
+            
+        except Exception as e:
+            logger.error(f"PDF 분석 실패: {str(e)}")
+            return {
+                'status': 'error',
+                'error': str(e),
+                'processing_time': (datetime.now() - start_time).total_seconds()
+            }
+        finally:
+            # 임시 디렉토리 정리
+            if os.path.exists(temp_dir):
+                shutil.rmtree(temp_dir)

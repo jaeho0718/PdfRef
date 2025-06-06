@@ -32,8 +32,12 @@ class TextDetector:
                 dt_scores = result['res']['dt_scores']
                 
                 for poly, score in zip(dt_polys, dt_scores):
+                    if hasattr(poly, 'tolist'):
+                        bbox = poly.tolist()
+                    else:
+                        bbox = poly
                     text_boxes.append({
-                        'bbox': poly.tolist(),
+                        'bbox': bbox,
                         'score': float(score)
                     })
             
