@@ -389,6 +389,91 @@ GET /health
 
 ---
 
+## 로컬에서 실행하기
+### 시스템 요구사항
+
+- Python 3.8+
+- CUDA 11.8 (GPU 가속)
+- Redis (비동기 처리, API 서버용)
+- PaddlePaddle
+- PyTorch + Transformers
+
+### 설치 및 실행 방법
+
+#### 1. 환경 설정
+
+```bash
+# Python 가상환경 생성
+python -m venv venv
+source venv/bin/activate  # Windows: venv\Scripts\activate
+
+# 의존성 설치
+pip install -r requirements.txt
+
+# PyTorch (CUDA 11.8)
+pip install -r requirements-torch.txt
+```
+
+#### 2. CLI로 로컬 실행 (권장)
+
+Redis 서버 없이도 로컬에서 바로 PDF 분석이 가능합니다.
+
+```bash
+# 시스템 정보 확인
+python -m modules.cli_analyzer info
+
+# PDF 분석 (기본)
+python -m modules.cli_analyzer analyze document.pdf
+
+# 결과를 특정 폴더에 저장
+python -m modules.cli_analyzer analyze document.pdf --output ./results
+
+# 프론트엔드 친화적 형식으로 출력
+python -m modules.cli_analyzer analyze document.pdf --frontend-format
+
+# 상세 출력 (verbose)
+python -m modules.cli_analyzer analyze document.pdf --verbose
+
+# 저장된 결과 파일 보기
+python -m modules.cli_analyzer view results/analysis_document.json
+
+# 특정 페이지 결과만 보기
+python -m modules.cli_analyzer view results/analysis_document.json --page 5
+
+# 테이블 형식으로 보기
+python -m modules.cli_analyzer view results/analysis_document.json --format table
+```
+
+##### CLI 사용 예시
+
+```bash
+# 1. 시스템 정보 확인
+$ python -m modules.cli_analyzer info
+
+# 2. PDF 분석 (실시간 진행상황 표시)
+$ python -m modules.cli_analyzer analyze research_paper.pdf --output ./results --verbose
+
+📄 PDF Document Analyzer
+File: research_paper.pdf
+┌─────────────────────────────────────────────┐
+│ Progress                                    │
+├─────────────────────────────────────────────┤
+│ ⣾ Analyzing PDF... ████████████░░░ 75% 0:00:30 │
+└─────────────────────────────────────────────┘
+┌─────────────────────────────────────────────┐
+│ Statistics                                  │
+├─────────────────────────────────────────────┤
+│ Total Pages         │ 45                    │
+│ Current Page        │ 34/45                 │
+│ Processing Speed    │ 1.2 pages/sec         │
+│ Figures Detected    │ 28                    │
+│ References Found    │ 156                   │
+└─────────────────────────────────────────────┘
+
+# 3. 결과 확인
+$ python -m modules.cli_analyzer view results/analysis_research_paper.json --format summary
+```
+
 ## 성능 최적화
 
 ### 권장 사항
