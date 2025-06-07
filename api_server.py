@@ -53,6 +53,18 @@ celery = Celery(
     backend='redis://localhost:6379/0'
 )
 
+celery.conf.update(
+    task_serializer='json',
+    accept_content=['json'],
+    result_serializer='json',
+    timezone='Asia/Seoul',
+    enable_utc=True,
+    result_expires=3600,
+    task_track_started=True,
+    task_time_limit=30 * 60,  # 30분
+    task_soft_time_limit=25 * 60,  # 25분
+)
+
 # 업로드 폴더 생성
 os.makedirs(config.UPLOAD_FOLDER, exist_ok=True)
 os.makedirs('results', exist_ok=True)
@@ -97,6 +109,7 @@ def allowed_file(filename):
 @celery.task(bind=True)
 def analyze_pdf_task(self, task_id: str, pdf_path: str):
     """비동기 PDF 분석 태스크"""
+    logger.info(f"PDF 분석 태스크 시작: task_id={task_id}, pdf_path={pdf_path}")
     try:
         # 진행 상황 업데이트 콜백
         def update_progress(completed, total):
@@ -144,7 +157,7 @@ def analyze_pdf_task(self, task_id: str, pdf_path: str):
                 'timestamp': datetime.now().isoformat()
             }
             redis_client.publish(f"progress:{task_id}", json.dumps(event_data))
-        
+
         # PDF 분석 수행
         result = document_analyzer.analyze_pdf_with_callbacks(
             pdf_path,

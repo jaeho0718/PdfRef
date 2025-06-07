@@ -69,7 +69,7 @@ def main():
     celery_cmd = [
         sys.executable,
         "-m", "celery",
-        "-A", "api_server_v2.celery",
+        "-A", "api_server.celery",
         "worker",
         "--loglevel=info",
         "--pool=threads",  # Windows에서는 threads 사용

@@ -17,7 +17,7 @@ class Config:
     
     # API 설정
     API_HOST = "0.0.0.0"
-    API_PORT = 12322
+    API_PORT = 12321
     
     # 파일 업로드 설정
     UPLOAD_FOLDER = "uploads"
