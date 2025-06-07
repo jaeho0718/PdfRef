@@ -14,6 +14,7 @@ from .figure_classifier import FigureClassifier
 from .figure_mapper import FigureMapper
 from .pdf_processor import PDFProcessor
 from .parallel_processor import ParallelProcessor
+from .response_models import transform_analysis_result
 
 logger = logging.getLogger(__name__)
 
@@ -29,8 +30,16 @@ class DocumentAnalyzer:
         
     def analyze_pdf(self, pdf_path: str, 
                    chunk_size: int = 10,
-                   progress_callback: Callable = None) -> Dict[str, Any]:
-        """PDF 문서 전체 분석"""
+                   progress_callback: Callable = None,
+                   frontend_format: bool = False) -> Dict[str, Any]:
+        """PDF 문서 전체 분석
+        
+        Args:
+            pdf_path: PDF 파일 경로
+            chunk_size: 처리 청크 크기
+            progress_callback: 진행 상황 콜백
+            frontend_format: True이면 프론트엔드 친화적인 형식으로 반환
+        """
         start_time = datetime.now()
         temp_dir = tempfile.mkdtemp()
         
@@ -78,6 +87,10 @@ class DocumentAnalyzer:
                 'processing_time': (datetime.now() - start_time).total_seconds()
             }
             
+            # 프론트엔드 형식으로 변환
+            if frontend_format:
+                return transform_analysis_result(analysis_result)
+            
             return analysis_result
             
         except Exception as e:
@@ -95,8 +108,17 @@ class DocumentAnalyzer:
                                   pdf_path: str,
                                   chunk_size: int = 10,
                                   progress_callback: Callable = None,
-                                  page_callback: Callable = None) -> Dict[str, Any]:
-        """콜백과 함께 PDF 분석 (CLI용)"""
+                                  page_callback: Callable = None,
+                                  frontend_format: bool = False) -> Dict[str, Any]:
+        """콜백과 함께 PDF 분석 (CLI용)
+        
+        Args:
+            pdf_path: PDF 파일 경로
+            chunk_size: 처리 청크 크기
+            progress_callback: 진행 상황 콜백
+            page_callback: 페이지 완료 콜백
+            frontend_format: True이면 프론트엔드 친화적인 형식으로 반환
+        """
         start_time = datetime.now()
         temp_dir = tempfile.mkdtemp()
         
@@ -141,6 +163,10 @@ class DocumentAnalyzer:
                 'summary': self._generate_summary(results),
                 'processing_time': (datetime.now() - start_time).total_seconds()
             }
+            
+            # 프론트엔드 형식으로 변환
+            if frontend_format:
+                return transform_analysis_result(analysis_result)
             
             return analysis_result
             

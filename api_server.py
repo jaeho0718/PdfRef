@@ -75,6 +75,8 @@ document_analyzer = DocumentAnalyzer()
 # Swagger 모델 정의
 upload_parser = api.parser()
 upload_parser.add_argument('file', location='files', type=FileStorage, required=True, help='PDF 파일')
+upload_parser.add_argument('format', location='form', type=str, required=False, default='frontend', 
+                          choices=['frontend', 'raw'], help='응답 형식 (frontend: 프론트엔드 친화적, raw: 원본 형식)')
 
 task_response = api.model('TaskResponse', {
     'status': fields.String(description='작업 상태'),
@@ -107,9 +109,9 @@ def allowed_file(filename):
            filename.rsplit('.', 1)[1].lower() in config.ALLOWED_EXTENSIONS
 
 @celery.task(bind=True)
-def analyze_pdf_task(self, task_id: str, pdf_path: str):
+def analyze_pdf_task(self, task_id: str, pdf_path: str, frontend_format: bool = True):
     """비동기 PDF 분석 태스크"""
-    logger.info(f"PDF 분석 태스크 시작: task_id={task_id}, pdf_path={pdf_path}")
+    logger.info(f"PDF 분석 태스크 시작: task_id={task_id}, pdf_path={pdf_path}, frontend_format={frontend_format}")
     try:
         # 진행 상황 업데이트 콜백
         def update_progress(completed, total):
@@ -163,7 +165,8 @@ def analyze_pdf_task(self, task_id: str, pdf_path: str):
             pdf_path,
             chunk_size=10,
             progress_callback=update_progress,
-            page_callback=page_callback
+            page_callback=page_callback,
+            frontend_format=frontend_format
         )
         
         # 결과 저장
@@ -269,8 +272,12 @@ class PDFAnalysis(Resource):
             filepath = os.path.join(app.config['UPLOAD_FOLDER'], unique_filename)
             file.save(filepath)
             
+            # 응답 형식 확인
+            response_format = request.form.get('format', 'frontend')
+            frontend_format = response_format == 'frontend'
+            
             # 비동기 태스크 시작
-            task = analyze_pdf_task.apply_async(args=[task_id, filepath])
+            task = analyze_pdf_task.apply_async(args=[task_id, filepath, frontend_format])
             
             # Redis에 태스크 정보 저장
             redis_client.hset(f"task:{task_id}", 'task_id', task_id)
@@ -278,6 +285,7 @@ class PDFAnalysis(Resource):
             redis_client.hset(f"task:{task_id}", 'filename', filename)
             redis_client.hset(f"task:{task_id}", 'status', 'pending')
             redis_client.hset(f"task:{task_id}", 'created_at', datetime.now().isoformat())
+            redis_client.hset(f"task:{task_id}", 'response_format', response_format)
             
             return {
                 'status': 'accepted',

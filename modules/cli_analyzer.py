@@ -31,7 +31,7 @@ class CLIAnalyzer:
         self.document_analyzer = DocumentAnalyzer()
         self.pdf_processor = PDFProcessor()
 
-    def analyze_pdf_with_progress(self, pdf_path: str, output_dir: str = None) -> Dict[str, Any]:
+    def analyze_pdf_with_progress(self, pdf_path: str, output_dir: str = None, frontend_format: bool = False) -> Dict[str, Any]:
         """진행 상황을 표시하면서 PDF 분석"""
         # PDF 정보 먼저 확인
         pdf_info = self.pdf_processor.get_pdf_info(pdf_path)
@@ -136,7 +136,8 @@ class CLIAnalyzer:
             results = self.document_analyzer.analyze_pdf_with_callbacks(
                 pdf_path,
                 progress_callback=update_progress,
-                page_callback=page_callback
+                page_callback=page_callback,
+                frontend_format=frontend_format
             )
 
             # 완료
@@ -157,21 +158,56 @@ class CLIAnalyzer:
         console.print("\n[bold cyan]Analysis Summary[/bold cyan]")
         console.print("=" * 50)
 
-        summary = results.get('summary', {})
+        # Frontend format 체크
+        if 'title' in results and 'chapters' in results and 'pages' in results:
+            # Frontend format
+            metadata = results.get('metadata', {})
+            
+            # 요약 테이블
+            table = Table(show_header=True, header_style="bold magenta")
+            table.add_column("Metric", style="cyan", width=30)
+            table.add_column("Value", style="green", width=20)
 
-        # 요약 테이블
-        table = Table(show_header=True, header_style="bold magenta")
-        table.add_column("Metric", style="cyan", width=30)
-        table.add_column("Value", style="green", width=20)
+            table.add_row("Document Title", results.get('title', 'N/A'))
+            table.add_row("Total Pages", str(metadata.get('total_pages', len(results.get('pages', [])))))
+            table.add_row("Total Chapters", str(len(results.get('chapters', []))))
+            
+            # 레이아웃 통계 계산
+            total_figures = 0
+            total_texts = 0
+            total_references = 0
+            
+            for page in results.get('pages', []):
+                for layout in page.get('layouts', []):
+                    if layout.get('type') == 'figure':
+                        total_figures += 1
+                    elif layout.get('type') == 'text':
+                        total_texts += 1
+                    elif layout.get('type') == 'figure_reference':
+                        total_references += 1
+            
+            table.add_row("Total Figures", str(total_figures))
+            table.add_row("Total Text Elements", str(total_texts))
+            table.add_row("Total Figure References", str(total_references))
+            table.add_row("Processing Time", f"{metadata.get('processing_time', 0):.2f}s")
+        
+        else:
+            # Original format
+            summary = results.get('summary', {})
 
-        table.add_row("Total Pages", str(results.get('total_pages', 0)))
-        table.add_row("Total Layouts Detected", str(summary.get('total_layouts', 0)))
-        table.add_row("Total Figures", str(summary.get('total_figures', 0)))
-        table.add_row("Total Texts Recognized", str(summary.get('total_texts', 0)))
-        table.add_row("Total Figure References", str(summary.get('total_figure_references', 0)))
-        table.add_row("Error Pages", str(summary.get('error_pages', 0)))
-        table.add_row("Success Rate", f"{summary.get('success_rate', 0):.1f}%")
-        table.add_row("Processing Time", f"{results.get('processing_time', 0):.2f}s")
+            # 요약 테이블
+            table = Table(show_header=True, header_style="bold magenta")
+            table.add_column("Metric", style="cyan", width=30)
+            table.add_column("Value", style="green", width=20)
+
+            table.add_row("Total Pages", str(results.get('total_pages', 0)))
+            table.add_row("Total Layouts Detected", str(summary.get('total_layouts', 0)))
+            table.add_row("Total Figures", str(summary.get('total_figures', 0)))
+            table.add_row("Total Texts Recognized", str(summary.get('total_texts', 0)))
+            table.add_row("Total Figure References", str(summary.get('total_figure_references', 0)))
+            table.add_row("Error Pages", str(summary.get('error_pages', 0)))
+            table.add_row("Success Rate", f"{summary.get('success_rate', 0):.1f}%")
+            table.add_row("Processing Time", f"{results.get('processing_time', 0):.2f}s")
 
         console.print(table)
 
@@ -180,13 +216,24 @@ class CLIAnalyzer:
             mapped_refs = 0
             unmapped_refs = 0
 
-            for page in results['pages']:
-                if 'figure_references' in page:
-                    for ref in page['figure_references']:
-                        if ref.get('mapped_figure_id'):
-                            mapped_refs += 1
-                        else:
-                            unmapped_refs += 1
+            if 'title' in results and 'chapters' in results:
+                # Frontend format
+                for page in results['pages']:
+                    for layout in page.get('layouts', []):
+                        if layout.get('type') == 'figure_reference':
+                            if layout.get('referenced_figure_id'):
+                                mapped_refs += 1
+                            else:
+                                unmapped_refs += 1
+            else:
+                # Original format
+                for page in results['pages']:
+                    if 'figure_references' in page:
+                        for ref in page['figure_references']:
+                            if ref.get('mapped_figure_id'):
+                                mapped_refs += 1
+                            else:
+                                unmapped_refs += 1
 
             if mapped_refs > 0 or unmapped_refs > 0:
                 console.print(f"\n[bold]Figure Mapping Results:[/bold]")
@@ -207,7 +254,8 @@ def cli():
 @click.option('--output', '-o', type=click.Path(), help='Output directory for results')
 @click.option('--pages', '-p', type=str, help='Page range (e.g., "1-10" or "1,3,5")')
 @click.option('--verbose', '-v', is_flag=True, help='Verbose output')
-def analyze(pdf_path: str, output: Optional[str], pages: Optional[str], verbose: bool):
+@click.option('--frontend-format', '-f', is_flag=True, help='Output in frontend-friendly format')
+def analyze(pdf_path: str, output: Optional[str], pages: Optional[str], verbose: bool, frontend_format: bool):
     """Analyze a PDF document for figure references"""
 
     # 파일 확인
@@ -240,7 +288,7 @@ def analyze(pdf_path: str, output: Optional[str], pages: Optional[str], verbose:
 
     try:
         # 분석 수행
-        results = analyzer.analyze_pdf_with_progress(pdf_path, output)
+        results = analyzer.analyze_pdf_with_progress(pdf_path, output, frontend_format)
 
         # 결과 요약 표시
         analyzer.display_results_summary(results)
