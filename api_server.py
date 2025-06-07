@@ -48,7 +48,7 @@ redis_client = redis.Redis(host='localhost', port=6379, decode_responses=True)
 
 # Celery 설정
 celery = Celery(
-    'pdf_analyzer',
+    'api_server',
     broker='redis://localhost:6379/0',
     backend='redis://localhost:6379/0'
 )
