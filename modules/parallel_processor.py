@@ -29,14 +29,14 @@ class ParallelProcessor:
         self.memory_threshold = 80  # 메모리 사용률 임계값 (%)
 
     def process_pages_with_callbacks(self,
-                                   pages: List[Tuple[int, str]],
+                                   pages: List[Tuple],
                                    process_func: Callable,
                                    progress_callback: Callable = None,
                                    page_callback: Callable = None) -> List[Dict]:
         """콜백과 함께 페이지 병렬 처리
         
         Args:
-            pages: (page_number, image_path) 튜플 리스트
+            pages: (page_number, image_path[, width, height]) 튜플 리스트
             process_func: 각 페이지를 처리할 함수
             progress_callback: 진행 상황 콜백
             page_callback: 페이지 완료 콜백
@@ -51,13 +51,15 @@ class ParallelProcessor:
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             # Future 객체 생성
             futures = {
-                executor.submit(process_func, img_path, page_num): (page_num, img_path) 
-                for page_num, img_path in pages
+                executor.submit(process_func, page_data): page_data
+                for page_data in pages
             }
             
             # 완료된 작업 처리
             for future in concurrent.futures.as_completed(futures):
-                page_num, img_path = futures[future]
+                page_data = futures[future]
+                page_num = page_data[0] if len(page_data) > 0 else 0
+                img_path = page_data[1] if len(page_data) > 1 else ''
                 
                 try:
                     result = future.result(timeout=300)
