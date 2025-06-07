@@ -45,9 +45,3 @@ def validate_file_extension(filename: str, allowed_extensions: set) -> bool:
     """파일 확장자 검증"""
     return '.' in filename and \
            filename.rsplit('.', 1)[1].lower() in allowed_extensions
-
-def convert_pdf_to_images(pdf_path: str, output_dir: str) -> List[str]:
-    """PDF를 이미지로 변환 (구현 필요)"""
-    # PDF 변환 라이브러리 사용 (예: pdf2image)
-    # 여기서는 placeholder
-    return []
