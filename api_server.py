@@ -229,17 +229,54 @@ def generate_progress_stream(task_id: str) -> Generator[str, None, None]:
     # 초기 상태 전송
     task_info = redis_client.hgetall(f"task:{task_id}")
     if task_info:
-        yield f"data: {json.dumps(task_info)}\n\n"
+        progress_data = {
+            "task_id": task_id,
+            "status": task_info.get('status', 'pending'),
+            "progress": float(task_info.get('progress', 0)),
+            "current": int(task_info.get('current', 0)),
+            "total": int(task_info.get('total', 0)),
+            "timestamp": task_info.get('last_update', datetime.now().isoformat())
+        }
+        yield f"data: {json.dumps(progress_data)}\n\n"
     
     # 실시간 업데이트 스트리밍
     try:
         for message in pubsub.listen():
             if message['type'] == 'message':
-                yield f"data: {message['data']}\n\n"
-                
-                # 완료 또는 에러 시 스트림 종료
                 data = json.loads(message['data'])
-                if data.get('type') in ['completed', 'error']:
+                
+                # 진행 상황 정보만 필터링
+                if 'progress' in data:
+                    progress_data = {
+                        "task_id": task_id,
+                        "status": "processing",
+                        "progress": data['progress'],
+                        "current": data['current'],
+                        "total": data['total'],
+                        "timestamp": data['timestamp']
+                    }
+                    yield f"data: {json.dumps(progress_data)}\n\n"
+                elif data.get('type') == 'completed':
+                    progress_data = {
+                        "task_id": task_id,
+                        "status": "completed",
+                        "progress": 100.0,
+                        "current": data.get('current', 0),
+                        "total": data.get('total', 0),
+                        "timestamp": data['timestamp']
+                    }
+                    yield f"data: {json.dumps(progress_data)}\n\n"
+                    break
+                elif data.get('type') == 'error':
+                    progress_data = {
+                        "task_id": task_id,
+                        "status": "failed",
+                        "progress": 0.0,
+                        "current": 0,
+                        "total": 0,
+                        "timestamp": data['timestamp']
+                    }
+                    yield f"data: {json.dumps(progress_data)}\n\n"
                     break
     finally:
         pubsub.unsubscribe()
