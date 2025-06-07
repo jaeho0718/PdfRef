@@ -311,14 +311,22 @@ class FigureMapper:
     
     def _is_bbox_inside(self, inner_bbox: List[float], outer_bbox: List[float]) -> bool:
         """inner_bbox가 outer_bbox 내부에 있는지 확인"""
-        if len(inner_bbox) < 4 or len(outer_bbox) < 4:
+        if not isinstance(inner_bbox, (list, np.ndarray)) or len(inner_bbox) < 4:
             return False
-        
-        return (inner_bbox[0] >= outer_bbox[0] and 
-                inner_bbox[1] >= outer_bbox[1] and 
-                inner_bbox[2] <= outer_bbox[2] and 
-                inner_bbox[3] <= outer_bbox[3])
-    
+        if not isinstance(outer_bbox, (list, np.ndarray)) or len(outer_bbox) < 4:
+            return False
+
+        try:
+            inner = [float(x) for x in inner_bbox[:4]]
+            outer = [float(x) for x in outer_bbox[:4]]
+        except (ValueError, TypeError):
+            return False
+
+        return (inner[0] >= outer[0] and 
+                inner[1] >= outer[1] and 
+                inner[2] <= outer[2] and 
+                inner[3] <= outer[3])
+
     def _calculate_horizontal_overlap(self, 
                                     bbox1: List[float], 
                                     bbox2: List[float]) -> float:

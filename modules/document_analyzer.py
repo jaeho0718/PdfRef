@@ -224,18 +224,18 @@ class DocumentAnalyzer:
             'subsection': None,
             'title': None
         }
-        
+
         # 제목 레이아웃 찾기
         title_layouts = [
             layout for layout in layouts 
             if layout.get('label', '').lower() in ['title', 'paragraph_title', 'header']
         ]
-        
+
         # 각 텍스트 검사
         for text_info in texts:
             text = text_info.get('text', '').strip()
             bbox = self._normalize_bbox(text_info.get('bbox', []))
-            
+
             # 텍스트가 제목 레이아웃 내에 있는지 확인
             is_title = False
             for title_layout in title_layouts:
@@ -254,7 +254,7 @@ class DocumentAnalyzer:
             if section_match and is_title:
                 chapter_info['section'] = section_match.get('section')
                 chapter_info['subsection'] = section_match.get('subsection')
-        
+
         return chapter_info
     
     def _match_chapter_pattern(self, text: str) -> Optional[Dict]:
@@ -318,34 +318,45 @@ class DocumentAnalyzer:
     def _is_likely_chapter_heading(self, text_info: Dict, all_texts: List[Dict]) -> bool:
         """텍스트가 챕터 제목일 가능성 판단"""
         text = text_info.get('text', '')
-        bbox = self._normalize_bbox(text_info.get('bbox', []))
-
-        if len(bbox) < 4:
+        bbox = text_info.get('bbox', [])
+        
+        # bbox가 리스트인지 확인하고 적절한 길이인지 체크
+        if not isinstance(bbox, (list, np.ndarray)) or len(bbox) < 4:
             return False
-
+        
+        # 각 요소가 숫자인지 확인
+        try:
+            bbox_values = [float(x) for x in bbox]
+        except (ValueError, TypeError):
+            return False
+        
         # 휴리스틱 1: 페이지 상단에 위치
-        if bbox[1] < 200:  # Y 좌표가 200 픽셀 이내
+        if bbox_values[1] < 200:  # Y 좌표가 200 픽셀 이내
             return True
-
+        
         # 휴리스틱 2: 다른 텍스트보다 큰 폰트 (bbox 높이로 추정)
-        text_height = bbox[3] - bbox[1]
-
-        # 모든 텍스트의 평균 높이 계산
+        text_height = bbox_values[3] - bbox_values[1]
+        
+        # 평균 높이 계산
         heights = []
         for t in all_texts:
-            t_bbox = self._normalize_bbox(t.get('bbox', []))
-            if len(t_bbox) >= 4:
-                heights.append(t_bbox[3] - t_bbox[1])
-
+            t_bbox = t.get('bbox', [])
+            if isinstance(t_bbox, (list, np.ndarray)) and len(t_bbox) >= 4:
+                try:
+                    t_bbox_values = [float(x) for x in t_bbox]
+                    heights.append(t_bbox_values[3] - t_bbox_values[1])
+                except:
+                    continue
+                
         if heights:
             avg_height = np.mean(heights)
             if text_height > avg_height * 1.5:
                 return True
-
+        
         # 휴리스틱 3: 독립된 줄 (주변에 다른 텍스트 없음)
         if self._is_isolated_text(text_info, all_texts):
             return True
-
+        
         return False
 
     def _is_isolated_text(self, text_info: Dict, all_texts: List[Dict]) -> bool:
