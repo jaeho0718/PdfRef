@@ -99,6 +99,7 @@ class PageInfo:
     section: Optional[str] = None
     layouts: List[Dict[str, Any]] = field(default_factory=list)
     full_text: str = ""
+    size: Optional[Dict[str, int]] = None
     
     def add_text_element(self, bbox: List[float], text: str, confidence: Optional[float] = None):
         """Add text element to page"""
@@ -142,7 +143,8 @@ class PageInfo:
             "chapter": self.chapter,
             "section": self.section,
             "layouts": self.layouts,
-            "full_text": self.full_text.strip()
+            "full_text": self.full_text.strip(),
+            "size": self.size
         }
 
 
@@ -307,7 +309,8 @@ def transform_analysis_result(raw_result: Dict[str, Any]) -> Dict[str, Any]:
         page_info = PageInfo(
             page_index=page_idx,
             chapter=str(chapter_info.get('chapter')) if chapter_info.get('chapter') else None,
-            section=chapter_info.get('section')
+            section=chapter_info.get('section'),
+            size=page_data.get('size')
         )
         
         # Add text elements

@@ -56,7 +56,7 @@ class DocumentAnalyzer:
             # 병렬 처리로 페이지별 분석
             results = self.parallel_processor.process_pages_parallel(
                 pages,
-                self._analyze_single_page,
+                self._analyze_single_page_with_size,
                 batch_size=1
             )
             
@@ -133,7 +133,7 @@ class DocumentAnalyzer:
             # 병렬 처리 with 콜백
             results = self.parallel_processor.process_pages_with_callbacks(
                 pages,
-                self._analyze_single_page,
+                self._analyze_single_page_with_size,
                 progress_callback=progress_callback,
                 page_callback=page_callback
             )
@@ -180,6 +180,22 @@ class DocumentAnalyzer:
         finally:
             if os.path.exists(temp_dir):
                 shutil.rmtree(temp_dir)
+    
+    def _analyze_single_page_with_size(self, page_data: Tuple, *args) -> Dict[str, Any]:
+        """단일 페이지 분석 - 크기 정보 포함"""
+        if len(page_data) == 4:
+            page_index, image_path, width, height = page_data
+            size = {"width": width, "height": height}
+        else:
+            # 기존 형식과의 호환성
+            page_index, image_path = page_data[:2]
+            size = None
+        
+        result = self._analyze_single_page(image_path, page_index)
+        if result.get('status') == 'success' and size:
+            result['size'] = size
+        
+        return result
     
     def _analyze_single_page(self, image_path: str, page_index: int) -> Dict[str, Any]:
         """단일 페이지 분석 - 챕터/섹션 정보 포함"""

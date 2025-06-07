@@ -60,7 +60,7 @@ class PDFProcessor:
             end_page: 종료 페이지 (1-based)
             
         Yields:
-            (page_number, image_path) 튜플
+            (page_number, image_path, width, height) 튜플
         """
         temp_dir = tempfile.mkdtemp()
         
@@ -81,12 +81,15 @@ class PDFProcessor:
             
             # 각 이미지 저장 및 경로 반환
             for idx, image in enumerate(images):
+                # 이미지 크기 정보 추출
+                width, height = image.size
+                
                 page_num = (first_page - 1) + idx
                 image_filename = f"page_{page_num}_{uuid.uuid4()}.{self.output_format.lower()}"
                 image_path = os.path.join(temp_dir, image_filename)
                 
                 image.save(image_path, self.output_format)
-                yield (page_num, image_path)
+                yield (page_num, image_path, width, height)
                 
         except Exception as e:
             logger.error(f"PDF 변환 실패: {str(e)}")
