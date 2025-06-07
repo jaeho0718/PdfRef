@@ -8,12 +8,12 @@ import re
 import numpy as np
 import concurrent.futures
 
-from layout_detector import LayoutDetector
-from text_detector import TextDetector
-from figure_classifier import FigureClassifier
-from figure_mapper import FigureMapper
-from pdf_processor import PDFProcessor
-from parallel_processor import ParallelProcessor
+from .layout_detector import LayoutDetector
+from .text_detector import TextDetector
+from .figure_classifier import FigureClassifier
+from .figure_mapper import FigureMapper
+from .pdf_processor import PDFProcessor
+from .parallel_processor import ParallelProcessor
 
 logger = logging.getLogger(__name__)
 

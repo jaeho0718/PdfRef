@@ -15,7 +15,7 @@ import time
 import ijson
 
 from modules.document_analyzer import DocumentAnalyzer
-from config import config
+from modules.config import config
 
 # 로깅 설정
 logging.basicConfig(level=logging.INFO)

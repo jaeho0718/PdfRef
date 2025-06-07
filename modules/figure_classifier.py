@@ -1,4 +1,5 @@
 import re
+import os
 import torch
 import torch.nn as nn
 from transformers import BertTokenizer, BertForSequenceClassification, BertModel
@@ -7,7 +8,7 @@ import numpy as np
 from collections import defaultdict
 import logging
 
-from config import config
+from .config import config
 
 logger = logging.getLogger(__name__)
 
