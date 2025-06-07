@@ -215,8 +215,8 @@ class DocumentAnalyzer:
             }
     
     def _extract_page_structure_info(self, 
-                                    texts: List[Dict], 
-                                    layouts: List[Dict]) -> Dict[str, Any]:
+                                texts: List[Dict], 
+                                layouts: List[Dict]) -> Dict[str, Any]:
         """페이지에서 구조 정보 (챕터, 섹션 등) 추출"""
         chapter_info = {
             'chapter': None,
@@ -234,7 +234,7 @@ class DocumentAnalyzer:
         # 각 텍스트 검사
         for text_info in texts:
             text = text_info.get('text', '').strip()
-            bbox = text_info.get('bbox', [])
+            bbox = self._normalize_bbox(text_info.get('bbox', []))
             
             # 텍스트가 제목 레이아웃 내에 있는지 확인
             is_title = False
@@ -242,7 +242,7 @@ class DocumentAnalyzer:
                 if self._is_bbox_inside(bbox, title_layout.get('bbox', [])):
                     is_title = True
                     break
-            
+                
             # 챕터 패턴 매칭
             chapter_match = self._match_chapter_pattern(text)
             if chapter_match and (is_title or self._is_likely_chapter_heading(text_info, texts)):
@@ -297,53 +297,128 @@ class DocumentAnalyzer:
         
         return None
     
+    def _normalize_bbox(self, bbox):
+        """bbox를 [x_min, y_min, x_max, y_max] 형식으로 정규화"""
+        if not bbox or len(bbox) == 0:
+            return []
+
+        # 이미 [x_min, y_min, x_max, y_max] 형식인 경우
+        if len(bbox) == 4 and isinstance(bbox[0], (int, float)):
+            return bbox
+
+        # [[x1,y1], [x2,y2], [x3,y3], [x4,y4]] 형식인 경우
+        if len(bbox) >= 4 and isinstance(bbox[0], (list, tuple)):
+            x_coords = [point[0] for point in bbox]
+            y_coords = [point[1] for point in bbox]
+            return [min(x_coords), min(y_coords), max(x_coords), max(y_coords)]
+
+        # 그 외의 경우
+        return []
+
     def _is_likely_chapter_heading(self, text_info: Dict, all_texts: List[Dict]) -> bool:
         """텍스트가 챕터 제목일 가능성 판단"""
         text = text_info.get('text', '')
-        bbox = text_info.get('bbox', [])
-        
+        bbox = self._normalize_bbox(text_info.get('bbox', []))
+
+        if len(bbox) < 4:
+            return False
+
         # 휴리스틱 1: 페이지 상단에 위치
-        if len(bbox) >= 4 and bbox[1] < 200:  # Y 좌표가 200 픽셀 이내
+        if bbox[1] < 200:  # Y 좌표가 200 픽셀 이내
             return True
-        
+
         # 휴리스틱 2: 다른 텍스트보다 큰 폰트 (bbox 높이로 추정)
-        if len(bbox) >= 4:
-            text_height = bbox[3] - bbox[1]
-            avg_height = np.mean([
-                t.get('bbox', [0,0,0,0])[3] - t.get('bbox', [0,0,0,0])[1] 
-                for t in all_texts if len(t.get('bbox', [])) >= 4
-            ])
+        text_height = bbox[3] - bbox[1]
+
+        # 모든 텍스트의 평균 높이 계산
+        heights = []
+        for t in all_texts:
+            t_bbox = self._normalize_bbox(t.get('bbox', []))
+            if len(t_bbox) >= 4:
+                heights.append(t_bbox[3] - t_bbox[1])
+
+        if heights:
+            avg_height = np.mean(heights)
             if text_height > avg_height * 1.5:
                 return True
-        
+
         # 휴리스틱 3: 독립된 줄 (주변에 다른 텍스트 없음)
         if self._is_isolated_text(text_info, all_texts):
             return True
-        
+
         return False
-    
+
     def _is_isolated_text(self, text_info: Dict, all_texts: List[Dict]) -> bool:
         """텍스트가 독립된 줄인지 확인"""
-        bbox = text_info.get('bbox', [])
+        bbox = self._normalize_bbox(text_info.get('bbox', []))
         if len(bbox) < 4:
             return False
-        
+
         # 같은 Y 범위에 있는 다른 텍스트 찾기
         y_center = (bbox[1] + bbox[3]) / 2
         y_tolerance = (bbox[3] - bbox[1]) / 2
-        
+
         nearby_texts = 0
         for other in all_texts:
             if other == text_info:
                 continue
             
-            other_bbox = other.get('bbox', [])
+            other_bbox = self._normalize_bbox(other.get('bbox', []))
             if len(other_bbox) >= 4:
                 other_y_center = (other_bbox[1] + other_bbox[3]) / 2
                 if abs(other_y_center - y_center) < y_tolerance:
                     nearby_texts += 1
-        
+
         return nearby_texts == 0
+
+    def _is_bbox_inside(self, inner_bbox, outer_bbox) -> bool:
+        """inner_bbox가 outer_bbox 내부에 있는지 확인"""
+        inner = self._normalize_bbox(inner_bbox)
+        outer = self._normalize_bbox(outer_bbox)
+
+        if len(inner) < 4 or len(outer) < 4:
+            return False
+
+        # 약간의 여유를 두고 확인 (OCR 오차 고려)
+        margin = 5
+        return (inner[0] >= outer[0] - margin and 
+                inner[1] >= outer[1] - margin and 
+                inner[2] <= outer[2] + margin and 
+                inner[3] <= outer[3] + margin)
+
+    def _calculate_caption_position_score(self, figure_bbox, text_bbox) -> float:
+        """캡션 위치 점수 계산"""
+        # bbox 정규화
+        figure_bbox = self._normalize_bbox(figure_bbox)
+        text_bbox = self._normalize_bbox(text_bbox)
+
+        if len(figure_bbox) < 4 or len(text_bbox) < 4:
+            return 0.0
+
+        # Figure 중심과 텍스트 중심
+        fig_center_x = (figure_bbox[0] + figure_bbox[2]) / 2
+        text_center_x = (text_bbox[0] + text_bbox[2]) / 2
+
+        # 수평 정렬 점수
+        horizontal_distance = abs(fig_center_x - text_center_x)
+        fig_width = figure_bbox[2] - figure_bbox[0]
+        horizontal_score = max(0, 1 - horizontal_distance / fig_width) if fig_width > 0 else 0
+
+        # 수직 거리 점수
+        vertical_distance = 0
+        if text_bbox[1] > figure_bbox[3]:  # 텍스트가 아래에
+            vertical_distance = text_bbox[1] - figure_bbox[3]
+        elif text_bbox[3] < figure_bbox[1]:  # 텍스트가 위에
+            vertical_distance = figure_bbox[1] - text_bbox[3]
+        else:
+            return 0  # 겹치는 경우
+
+        # 너무 멀면 점수 감소
+        vertical_score = max(0, 1 - vertical_distance / 100)
+
+        # 최종 점수
+        return horizontal_score * 0.7 + vertical_score * 0.3
+
     
     def _enhance_figure_layouts(self, 
                               figure_layouts: List[Dict],
@@ -428,46 +503,6 @@ class DocumentAnalyzer:
             return caption_candidates[0]
         
         return None
-    
-    def _calculate_caption_position_score(self, 
-                                        figure_bbox: List[float], 
-                                        text_bbox: List[float]) -> float:
-        """캡션 위치 점수 계산"""
-        # Figure 중심과 텍스트 중심
-        fig_center_x = (figure_bbox[0] + figure_bbox[2]) / 2
-        text_center_x = (text_bbox[0] + text_bbox[2]) / 2
-        
-        # 수평 정렬 점수
-        horizontal_distance = abs(fig_center_x - text_center_x)
-        fig_width = figure_bbox[2] - figure_bbox[0]
-        horizontal_score = max(0, 1 - horizontal_distance / fig_width)
-        
-        # 수직 거리 점수
-        vertical_distance = 0
-        if text_bbox[1] > figure_bbox[3]:  # 텍스트가 아래에
-            vertical_distance = text_bbox[1] - figure_bbox[3]
-        elif text_bbox[3] < figure_bbox[1]:  # 텍스트가 위에
-            vertical_distance = figure_bbox[1] - text_bbox[3]
-        else:
-            return 0  # 겹치는 경우
-        
-        # 너무 멀면 점수 감소
-        vertical_score = max(0, 1 - vertical_distance / 100)
-        
-        # 최종 점수
-        return horizontal_score * 0.7 + vertical_score * 0.3
-    
-    def _is_bbox_inside(self, inner_bbox: List[float], outer_bbox: List[float]) -> bool:
-        """inner_bbox가 outer_bbox 내부에 있는지 확인"""
-        if len(inner_bbox) < 4 or len(outer_bbox) < 4:
-            return False
-        
-        # 약간의 여유를 두고 확인 (OCR 오차 고려)
-        margin = 5
-        return (inner_bbox[0] >= outer_bbox[0] - margin and 
-                inner_bbox[1] >= outer_bbox[1] - margin and 
-                inner_bbox[2] <= outer_bbox[2] + margin and 
-                inner_bbox[3] <= outer_bbox[3] + margin)
     
     def _extract_chapter_summary(self) -> List[Dict]:
         """챕터 구조 요약"""
