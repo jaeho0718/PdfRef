@@ -110,16 +110,11 @@ def analyze_pdf_task(self, task_id: str, pdf_path: str):
                 }
             )
             # Redis에도 저장
-            redis_client.hset(
-                f"task:{task_id}",
-                mapping={
-                    'progress': progress,
-                    'current': completed,
-                    'total': total,
-                    'status': 'processing',
-                    'last_update': datetime.now().isoformat()
-                }
-            )
+            redis_client.hset(f"task:{task_id}", 'progress', progress)
+            redis_client.hset(f"task:{task_id}", 'current', completed)
+            redis_client.hset(f"task:{task_id}", 'total', total)
+            redis_client.hset(f"task:{task_id}", 'status', 'processing')
+            redis_client.hset(f"task:{task_id}", 'last_update', datetime.now().isoformat())
             
             # 진행 상황 이벤트 발행
             event_data = {
@@ -164,15 +159,10 @@ def analyze_pdf_task(self, task_id: str, pdf_path: str):
             json.dump(result, f, ensure_ascii=False, indent=2)
         
         # Redis에 완료 상태 저장
-        redis_client.hset(
-            f"task:{task_id}",
-            mapping={
-                'status': 'completed',
-                'result_path': result_path,
-                'completed_at': datetime.now().isoformat(),
-                'progress': 100
-            }
-        )
+        redis_client.hset(f"task:{task_id}", 'status', 'completed')
+        redis_client.hset(f"task:{task_id}", 'result_path', result_path)
+        redis_client.hset(f"task:{task_id}", 'completed_at', datetime.now().isoformat())
+        redis_client.hset(f"task:{task_id}", 'progress', 100)
         
         # 완료 이벤트 발행
         event_data = {
@@ -196,14 +186,9 @@ def analyze_pdf_task(self, task_id: str, pdf_path: str):
     except Exception as e:
         logger.error(f"PDF 분석 실패: {str(e)}")
         # 에러 상태 저장
-        redis_client.hset(
-            f"task:{task_id}",
-            mapping={
-                'status': 'failed',
-                'error': str(e),
-                'failed_at': datetime.now().isoformat()
-            }
-        )
+        redis_client.hset(f"task:{task_id}", 'status', 'failed')
+        redis_client.hset(f"task:{task_id}", 'error', str(e))
+        redis_client.hset(f"task:{task_id}", 'failed_at', datetime.now().isoformat())
         
         # 에러 이벤트 발행
         event_data = {
@@ -275,16 +260,11 @@ class PDFAnalysis(Resource):
             task = analyze_pdf_task.apply_async(args=[task_id, filepath])
             
             # Redis에 태스크 정보 저장
-            redis_client.hset(
-                f"task:{task_id}",
-                mapping={
-                    'task_id': task_id,
-                    'celery_task_id': task.id,
-                    'filename': filename,
-                    'status': 'pending',
-                    'created_at': datetime.now().isoformat()
-                }
-            )
+            redis_client.hset(f"task:{task_id}", 'task_id', task_id)
+            redis_client.hset(f"task:{task_id}", 'celery_task_id', task.id)
+            redis_client.hset(f"task:{task_id}", 'filename', filename)
+            redis_client.hset(f"task:{task_id}", 'status', 'pending')
+            redis_client.hset(f"task:{task_id}", 'created_at', datetime.now().isoformat())
             
             return {
                 'status': 'accepted',
@@ -541,13 +521,8 @@ class CancelAnalysis(Resource):
                 celery.control.revoke(celery_task_id, terminate=True)
             
             # Redis 상태 업데이트
-            redis_client.hset(
-                f"task:{task_id}",
-                mapping={
-                    'status': 'cancelled',
-                    'cancelled_at': datetime.now().isoformat()
-                }
-            )
+            redis_client.hset(f"task:{task_id}", 'status', 'cancelled')
+            redis_client.hset(f"task:{task_id}", 'cancelled_at', datetime.now().isoformat())
             
             # 취소 이벤트 발행
             event_data = {
