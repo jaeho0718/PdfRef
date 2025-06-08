@@ -5,7 +5,9 @@ import time
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List, Tuple
+import cv2
+import numpy as np
 
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeRemainingColumn
@@ -30,6 +32,270 @@ class CLIAnalyzer:
     def __init__(self):
         self.document_analyzer = DocumentAnalyzer()
         self.pdf_processor = PDFProcessor()
+        
+        # Color scheme for visualization
+        self.color_scheme = {
+            'text': (0, 255, 0),          # Green
+            'title': (255, 0, 255),       # Magenta
+            'paragraph_title': (255, 128, 0),  # Orange
+            'figure': (255, 0, 0),        # Red
+            'table': (0, 255, 255),       # Cyan
+            'formula': (255, 255, 0),     # Yellow
+            'list': (128, 255, 128),      # Light Green
+            'abstract': (128, 128, 255),  # Light Blue
+            'header': (255, 128, 255),    # Pink
+            'footer': (128, 128, 128),    # Gray
+            'figure_reference': (0, 0, 255),  # Blue
+            'default': (255, 255, 255)    # White
+        }
+
+    def visualize_page(self, pdf_path: str, page_number: int, output_path: str = None, 
+                      show_text: bool = True, show_labels: bool = True, 
+                      scale: float = 1.0) -> str:
+        """Visualize OCR results for a specific page
+        
+        Args:
+            pdf_path: Path to PDF file
+            page_number: Page number (1-based)
+            output_path: Output image path (optional)
+            show_text: Show recognized text on image
+            show_labels: Show layout labels
+            scale: Scale factor for display
+            
+        Returns:
+            Path to output image
+        """
+        # Validate inputs
+        if not os.path.exists(pdf_path):
+            raise FileNotFoundError(f"PDF file not found: {pdf_path}")
+        
+        pdf_info = self.pdf_processor.get_pdf_info(pdf_path)
+        total_pages = pdf_info['total_pages']
+        
+        if page_number < 1 or page_number > total_pages:
+            raise ValueError(f"Page number must be between 1 and {total_pages}")
+        
+        # Convert page to image
+        console.print(f"[cyan]Converting page {page_number} to image...[/cyan]")
+        pages = list(self.pdf_processor.convert_pdf_to_images(
+            pdf_path, 
+            start_page=page_number, 
+            end_page=page_number
+        ))
+        
+        if not pages:
+            raise RuntimeError(f"Failed to convert page {page_number}")
+        
+        page_idx, image_path, width, height = pages[0]
+        
+        # Analyze page
+        console.print(f"[cyan]Analyzing page {page_number}...[/cyan]")
+        result = self.document_analyzer._analyze_single_page(image_path, page_idx)
+        
+        if result.get('status') == 'error':
+            raise RuntimeError(f"Analysis failed: {result.get('error')}")
+        
+        # Load image
+        image = cv2.imread(image_path)
+        if image is None:
+            raise RuntimeError(f"Failed to load image: {image_path}")
+        
+        # Scale image if needed
+        if scale != 1.0:
+            new_width = int(image.shape[1] * scale)
+            new_height = int(image.shape[0] * scale)
+            image = cv2.resize(image, (new_width, new_height))
+        
+        # Create visualization
+        viz_image = self._draw_visualization(
+            image, result, scale, show_text, show_labels
+        )
+        
+        # Generate output path if not provided
+        if output_path is None:
+            base_name = Path(pdf_path).stem
+            output_path = f"{base_name}_page_{page_number}_visualization.png"
+        
+        # Save visualization
+        cv2.imwrite(output_path, viz_image)
+        console.print(f"[green]✓[/green] Visualization saved to: {output_path}")
+        
+        # Clean up temporary image
+        if os.path.exists(image_path):
+            os.remove(image_path)
+        
+        return output_path
+
+    def _draw_visualization(self, image: np.ndarray, result: Dict, 
+                          scale: float, show_text: bool, show_labels: bool) -> np.ndarray:
+        """Draw visualization on image"""
+        # Create a copy to draw on
+        viz_image = image.copy()
+        
+        # Font settings
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = 0.5 * scale
+        font_thickness = max(1, int(1 * scale))
+        
+        # 1. Draw layout bounding boxes
+        layouts = result.get('layouts', [])
+        for layout in layouts:
+            bbox = layout.get('bbox', [])
+            label = layout.get('label', 'unknown')
+            score = layout.get('score', 0)
+            
+            if len(bbox) >= 4:
+                # Get color for this layout type
+                color = self.color_scheme.get(label.lower(), self.color_scheme['default'])
+                
+                # Scale bbox if needed
+                if scale != 1.0:
+                    bbox = [int(coord * scale) for coord in bbox[:4]]
+                else:
+                    bbox = [int(coord) for coord in bbox[:4]]
+                
+                # Draw rectangle
+                cv2.rectangle(viz_image, 
+                            (bbox[0], bbox[1]), 
+                            (bbox[2], bbox[3]), 
+                            color, 2)
+                
+                # Draw label
+                if show_labels:
+                    label_text = f"{label} ({score:.2f})"
+                    label_size, _ = cv2.getTextSize(label_text, font, font_scale, font_thickness)
+                    
+                    # Background for label
+                    cv2.rectangle(viz_image,
+                                (bbox[0], bbox[1] - label_size[1] - 4),
+                                (bbox[0] + label_size[0], bbox[1]),
+                                color, -1)
+                    
+                    # Label text
+                    cv2.putText(viz_image, label_text,
+                              (bbox[0], bbox[1] - 2),
+                              font, font_scale, (255, 255, 255), font_thickness)
+        
+        # 2. Draw recognized text
+        if show_text:
+            texts = result.get('recognized_texts', [])
+            for text_data in texts:
+                text = text_data.get('text', '')
+                bbox = text_data.get('bbox', [])
+                score = text_data.get('score', 0)
+                
+                if len(bbox) >= 4 and text:
+                    # Scale bbox if needed
+                    if scale != 1.0:
+                        bbox = [int(coord * scale) for coord in bbox[:4]]
+                    else:
+                        bbox = [int(coord) for coord in bbox[:4]]
+                    
+                    # Draw text bounding box
+                    cv2.rectangle(viz_image,
+                                (bbox[0], bbox[1]),
+                                (bbox[2], bbox[3]),
+                                (0, 255, 0), 1)
+                    
+                    # Draw text (truncate if too long)
+                    display_text = text[:20] + "..." if len(text) > 20 else text
+                    text_size, _ = cv2.getTextSize(display_text, font, font_scale * 0.8, 1)
+                    
+                    # Ensure text fits in image
+                    text_y = bbox[3] + text_size[1] + 2
+                    if text_y > viz_image.shape[0]:
+                        text_y = bbox[1] - 2
+                    
+                    cv2.putText(viz_image, display_text,
+                              (bbox[0], text_y),
+                              font, font_scale * 0.8, (0, 255, 0), 1)
+        
+        # 3. Draw figure references
+        figure_refs = result.get('figure_references', [])
+        for ref in figure_refs:
+            bbox = ref.get('bbox', [])
+            ref_text = ref.get('text', '')
+            mapped_id = ref.get('mapped_figure_id')
+            
+            if len(bbox) >= 4:
+                # Scale bbox if needed
+                if scale != 1.0:
+                    bbox = [int(coord * scale) for coord in bbox[:4]]
+                else:
+                    bbox = [int(coord) for coord in bbox[:4]]
+                
+                # Different color based on mapping status
+                color = (0, 255, 0) if mapped_id else (0, 0, 255)
+                
+                # Draw reference box
+                cv2.rectangle(viz_image,
+                            (bbox[0], bbox[1]),
+                            (bbox[2], bbox[3]),
+                            color, 2)
+                
+                # Draw reference info
+                ref_label = f"REF: {ref_text}"
+                if mapped_id:
+                    ref_label += f" -> {mapped_id}"
+                
+                cv2.putText(viz_image, ref_label,
+                          (bbox[0], bbox[1] - 2),
+                          font, font_scale * 0.8, color, font_thickness)
+        
+        # 4. Add legend
+        self._add_legend(viz_image, scale)
+        
+        return viz_image
+
+    def _add_legend(self, image: np.ndarray, scale: float):
+        """Add legend to visualization"""
+        # Legend settings
+        legend_height = int(200 * scale)
+        legend_width = int(250 * scale)
+        padding = int(10 * scale)
+        
+        # Create legend area
+        legend = np.ones((legend_height, legend_width, 3), dtype=np.uint8) * 255
+        
+        # Font settings
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = 0.4 * scale
+        font_thickness = max(1, int(1 * scale))
+        
+        # Add title
+        cv2.putText(legend, "Legend",
+                  (padding, int(20 * scale)),
+                  font, font_scale * 1.5, (0, 0, 0), font_thickness)
+        
+        # Add layout types
+        y_offset = int(40 * scale)
+        for label, color in self.color_scheme.items():
+            if label == 'default':
+                continue
+            
+            # Color box
+            cv2.rectangle(legend,
+                        (padding, y_offset),
+                        (padding + int(20 * scale), y_offset + int(15 * scale)),
+                        color, -1)
+            
+            # Label
+            cv2.putText(legend, label.replace('_', ' ').title(),
+                      (padding + int(30 * scale), y_offset + int(12 * scale)),
+                      font, font_scale, (0, 0, 0), font_thickness)
+            
+            y_offset += int(20 * scale)
+            
+            if y_offset > legend_height - int(20 * scale):
+                break
+        
+        # Overlay legend on main image
+        x_pos = image.shape[1] - legend_width - padding
+        y_pos = padding
+        
+        # Ensure legend fits
+        if x_pos >= 0 and y_pos >= 0:
+            image[y_pos:y_pos + legend_height, x_pos:x_pos + legend_width] = legend
 
     def analyze_pdf_with_progress(self, pdf_path: str, output_dir: str = None, frontend_format: bool = False) -> Dict[str, Any]:
         """진행 상황을 표시하면서 PDF 분석"""
@@ -314,6 +580,62 @@ def analyze(pdf_path: str, output: Optional[str], pages: Optional[str], verbose:
 
 
 @cli.command()
+@click.argument('pdf_path', type=click.Path(exists=True))
+@click.argument('page_number', type=int)
+@click.option('--output', '-o', type=click.Path(), help='Output image path')
+@click.option('--scale', '-s', type=float, default=1.0, help='Scale factor for visualization')
+@click.option('--no-text', is_flag=True, help='Hide recognized text')
+@click.option('--no-labels', is_flag=True, help='Hide layout labels')
+def visualize(pdf_path: str, page_number: int, output: Optional[str], 
+              scale: float, no_text: bool, no_labels: bool):
+    """Visualize OCR results for a specific page with bounding boxes and labels"""
+    
+    # 파일 확인
+    if not pdf_path.lower().endswith('.pdf'):
+        console.print("[red]Error:[/red] Only PDF files are supported")
+        sys.exit(1)
+    
+    # 시작 메시지
+    console.print(f"\n[bold]Visualizing OCR Results[/bold]")
+    console.print(f"  PDF: {Path(pdf_path).name}")
+    console.print(f"  Page: {page_number}")
+    console.print(f"  Scale: {scale}x")
+    console.print(f"  Show text: {'Yes' if not no_text else 'No'}")
+    console.print(f"  Show labels: {'Yes' if not no_labels else 'No'}")
+    console.print("")
+    
+    try:
+        analyzer = CLIAnalyzer()
+        
+        # 시각화 수행
+        output_path = analyzer.visualize_page(
+            pdf_path,
+            page_number,
+            output_path=output,
+            show_text=not no_text,
+            show_labels=not no_labels,
+            scale=scale
+        )
+        
+        # 결과 표시
+        console.print(f"\n[bold green]Visualization completed![/bold green]")
+        console.print(f"Output saved to: [cyan]{output_path}[/cyan]")
+        
+        # 이미지 크기 정보
+        import cv2
+        img = cv2.imread(output_path)
+        if img is not None:
+            height, width = img.shape[:2]
+            console.print(f"Image size: {width}x{height} pixels")
+        
+    except Exception as e:
+        console.print(f"\n[red]Error during visualization:[/red] {str(e)}")
+        import traceback
+        console.print(traceback.format_exc())
+        sys.exit(1)
+
+
+@cli.command()
 @click.argument('result_file', type=click.Path(exists=True))
 @click.option('--page', '-p', type=int, help='Show specific page results')
 @click.option('--format', '-f', type=click.Choice(['table', 'json', 'summary']), default='summary')
@@ -415,7 +737,7 @@ def info():
 
     # 모델 정보
     console.print("\n[bold]Configured Models:[/bold]")
-    from config import config
+    from modules.config import config
 
     model_table = Table(show_header=True, header_style="bold magenta")
     model_table.add_column("Model Type", style="cyan", width=20)
