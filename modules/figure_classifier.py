@@ -130,6 +130,7 @@ class FigureClassifier:
         
         for text_info in texts:
             text = text_info['text']
+            original_bbox = text_info.get('bbox', [])
             
             # 모든 패턴으로 매칭
             all_patterns = self.figure_patterns + self.extended_patterns
@@ -143,11 +144,20 @@ class FigureClassifier:
                     
                     for figure_num in figure_nums:
                         if figure_num is not None:
+                            # 매치된 텍스트의 정확한 바운딩 박스 계산
+                            word_bbox = self._calculate_word_bbox(
+                                text, 
+                                match.start(), 
+                                match.end(), 
+                                original_bbox
+                            )
+                            
                             ref_info = {
                                 'text': match.group(),
                                 'figure_number': figure_num,
                                 'text_id': text_info['text_id'],
-                                'bbox': text_info['bbox'],
+                                'bbox': word_bbox,  # 단어의 정확한 bbox
+                                'original_bbox': original_bbox,  # 전체 텍스트 줄의 bbox
                                 'start_pos': match.start(),
                                 'end_pos': match.end(),
                                 'full_text': text,
@@ -201,13 +211,27 @@ class FigureClassifier:
                     )
                     
                     if figure_num is not None:
+                        # Figure 참조 텍스트와 위치 찾기
+                        ref_text, ref_start, ref_end = self._extract_reference_text_with_position(
+                            meta['sentence']
+                        )
+                        
+                        # 단어의 정확한 바운딩 박스 계산
+                        word_bbox = self._calculate_word_bbox(
+                            meta['text_info']['text'],
+                            meta['start_pos'] + ref_start,
+                            meta['start_pos'] + ref_end,
+                            meta['text_info']['bbox']
+                        )
+                        
                         ref_info = {
-                            'text': self._extract_reference_text(meta['sentence']),
+                            'text': ref_text,
                             'figure_number': figure_num,
                             'text_id': meta['text_info']['text_id'],
-                            'bbox': meta['text_info']['bbox'],
-                            'start_pos': meta['start_pos'],
-                            'end_pos': meta['end_pos'],
+                            'bbox': word_bbox,  # 단어의 정확한 bbox
+                            'original_bbox': meta['text_info']['bbox'],  # 전체 텍스트 줄의 bbox
+                            'start_pos': meta['start_pos'] + ref_start,
+                            'end_pos': meta['start_pos'] + ref_end,
                             'full_text': meta['text_info']['text'],
                             'confidence': float(pred['confidence']),
                             'method': 'bert',
@@ -340,6 +364,21 @@ class FigureClassifier:
         
         return None
     
+    def _extract_reference_text_with_position(self, sentence: str) -> Tuple[str, int, int]:
+        """문장에서 Figure 참조 텍스트와 위치 추출
+        
+        Returns:
+            (reference_text, start_position, end_position)
+        """
+        # Figure 참조 패턴 찾기
+        for pattern in self.extended_patterns:
+            match = re.search(pattern, sentence, re.IGNORECASE)
+            if match:
+                return match.group(), match.start(), match.end()
+        
+        # 못 찾으면 전체 문장과 위치 반환
+        return sentence.strip(), 0, len(sentence)
+    
     def _extract_reference_text(self, sentence: str) -> str:
         """문장에서 Figure 참조 텍스트 추출"""
         # Figure 참조 패턴 찾기
@@ -359,6 +398,64 @@ class FigureClassifier:
         context_start = max(0, start - window)
         context_end = min(len(text), end + window)
         return text[context_start:context_end]
+    
+    def _calculate_word_bbox(self, full_text: str, start_pos: int, end_pos: int, 
+                           line_bbox: List[float]) -> List[float]:
+        """전체 텍스트에서 특정 단어의 바운딩 박스 계산
+        
+        Args:
+            full_text: 전체 텍스트
+            start_pos: 단어 시작 위치
+            end_pos: 단어 끝 위치
+            line_bbox: 전체 텍스트 줄의 바운딩 박스
+            
+        Returns:
+            단어의 예상 바운딩 박스 [x_min, y_min, x_max, y_max]
+        """
+        if not line_bbox or len(line_bbox) < 4:
+            return line_bbox
+        
+        # bbox를 [x_min, y_min, x_max, y_max] 형식으로 정규화
+        if isinstance(line_bbox[0], (list, tuple)):
+            # [[x1,y1], [x2,y2], ...] 형식인 경우
+            x_coords = [point[0] for point in line_bbox[:4]]
+            y_coords = [point[1] for point in line_bbox[:4]]
+            x_min = min(x_coords)
+            y_min = min(y_coords)
+            x_max = max(x_coords)
+            y_max = max(y_coords)
+        else:
+            x_min, y_min, x_max, y_max = line_bbox[:4]
+        
+        # 텍스트 줄의 너비와 높이
+        line_width = x_max - x_min
+        line_height = y_max - y_min
+        
+        # 텍스트 길이
+        text_length = len(full_text)
+        
+        if text_length == 0:
+            return [x_min, y_min, x_max, y_max]
+        
+        # 문자당 평균 너비 계산 (간단한 추정)
+        char_width = line_width / text_length
+        
+        # 단어의 상대적 위치 계산
+        word_x_start = x_min + (start_pos * char_width)
+        word_x_end = x_min + (end_pos * char_width)
+        
+        # 약간의 여백 추가 (더 정확한 바운딩 박스를 위해)
+        padding_x = char_width * 0.1
+        padding_y = line_height * 0.05
+        
+        word_bbox = [
+            max(x_min, word_x_start - padding_x),
+            y_min - padding_y,
+            min(x_max, word_x_end + padding_x),
+            y_max + padding_y
+        ]
+        
+        return word_bbox
     
     def _merge_results(self, rule_based: List[Dict], bert_based: List[Dict]) -> List[Dict]:
         """규칙 기반과 BERT 기반 결과 병합"""

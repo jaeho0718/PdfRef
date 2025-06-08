@@ -221,9 +221,15 @@ class FigureMapper:
                 ref['mapping_confidence'] = self._calculate_mapping_confidence(
                     ref, matched_figure, current_chapter_info
                 )
+                # bbox가 없으면 original_bbox 사용
+                if not ref.get('bbox') and ref.get('original_bbox'):
+                    ref['bbox'] = ref['original_bbox']
             else:
                 ref['mapped_figure_id'] = None
                 ref['mapping_confidence'] = 0.0
+                # bbox가 없으면 original_bbox 사용
+                if not ref.get('bbox') and ref.get('original_bbox'):
+                    ref['bbox'] = ref['original_bbox']
             
             mapped_references.append(ref)
         
