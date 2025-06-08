@@ -96,14 +96,22 @@ class FigureMapper:
                         # 섹션 번호 분리
                         if '.' in str(chapter_num):
                             parts = str(chapter_num).split('.')
+                            try:
+                                chapter = int(parts[0])
+                            except (ValueError, TypeError):
+                                chapter = None
                             return {
-                                'chapter': int(parts[0]),
+                                'chapter': chapter,
                                 'section': '.'.join(parts[1:]) if len(parts) > 1 else None,
                                 'text': text
                             }
                         else:
+                            try:
+                                chapter = int(chapter_num)
+                            except (ValueError, TypeError):
+                                chapter = None
                             return {
-                                'chapter': int(chapter_num),
+                                'chapter': chapter,
                                 'section': None,
                                 'text': text
                             }
