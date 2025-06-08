@@ -38,7 +38,7 @@ class LayoutDetector:
                     layouts.append(layout_info)
                     
                     # Figure 관련 레이아웃 분류
-                    if box['label'].lower() in ['figure', 'image', 'chart', 'diagram']:
+                    if box['label'].lower() in ['image', 'figure_title', 'chart', 'chart_title', 'header_image', 'footer_image']:
                         figure_info = layout_info.copy()
                         figure_info['figure_id'] = f"fig_{page_index}_{len(figure_layouts)}"
                         figure_layouts.append(figure_info)
@@ -60,7 +60,7 @@ class LayoutDetector:
     
     def filter_text_regions(self, layouts: List[Dict]) -> List[Dict]:
         """텍스트 영역만 필터링"""
-        text_labels = ['text', 'paragraph_title', 'paragraph', 'title', 'abstract']
+        text_labels = ['text', 'paragraph_title', 'abstract', 'content', 'reference', 'doc_title', 'footnote', 'header', 'aside_text']
         return [
             layout for layout in layouts 
             if layout['label'].lower() in text_labels
